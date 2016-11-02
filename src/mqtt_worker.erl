@@ -6,6 +6,7 @@
 % MZBench statement commands
 -export([
     connect/3,
+    con_sub/5,
     disconnect/2,
     publish/5,
     publish/6,
@@ -104,6 +105,11 @@ metrics() ->
 %% ------------------------------------------------
 %% Gen_MQTT Callbacks (partly un-used)
 %% ------------------------------------------------
+
+on_connect(#{connect_sub := {Topic, QoS}} = State) ->
+    mzb_metrics:notify({"mqtt.connection.current_total", counter}, 1),
+    subscribe_(self(), Topic, QoS),
+    {ok, State};
 on_connect(State) ->
     mzb_metrics:notify({"mqtt.connection.current_total", counter}, 1),
     {ok, State}.
@@ -155,9 +161,20 @@ code_change(_OldVsn, State, _Extra) ->
 %% ------------------------------------------------
 
 connect(State, _Meta, ConnectOpts) ->
+    con_sub_(State, _Meta, ConnectOpts, #{}).
+
+con_sub(State, _Meta, ConnectOpts, Topic, QoS) ->
+    con_sub_(State, _Meta, ConnectOpts, {Topic, QoS}).
+
+con_sub_(State, _Meta, ConnectOpts, Sub) ->
     ClientId = proplists:get_value(client, ConnectOpts),
-    {ok, SessionPid} = gen_emqtt:start_link(?MODULE, [], [{info_fun, {fun stats/2, maps:new()}}|ConnectOpts]),
+    {ok, SessionPid} = gen_emqtt:start_link(?MODULE, 
+                                            #{
+                                               connect_sub => Sub
+                                             },
+                                            [{info_fun, {fun stats/2, maps:new()}}|ConnectOpts]),
     {nil, State#state{mqtt_fsm=SessionPid, client=ClientId}}.
+    
 
 disconnect(#state{mqtt_fsm=SessionPid} = State, _Meta) ->
     gen_emqtt:disconnect(SessionPid),
@@ -179,13 +196,15 @@ publish(#state{mqtt_fsm = SessionPid} = State, _Meta, Topic, Payload, QoS, Retai
     end.
 
 subscribe(#state{mqtt_fsm = SessionPid} = State, _Meta, Topic, Qos) ->
+    subscribe_(SessionPid, Topic, Qos),
+    {nil, State}.
+
+subscribe_(SessionPid, Topic, Qos) ->
     case vmq_topic:validate_topic(subscribe, list_to_binary(Topic)) of
         {ok, TTopic} ->
-            gen_emqtt:subscribe(SessionPid, TTopic, Qos),
-            {nil, State};
+            gen_emqtt:subscribe(SessionPid, TTopic, Qos);
         {error, Reason} ->
-            error_logger:warning_msg("Can't validate topic conf ~p due to ~p~n", [Topic, Reason]),
-            {nil, State}
+            error_logger:warning_msg("Can't validate topic conf ~p due to ~p~n", [Topic, Reason])
     end.
 
 unsubscribe(#state{mqtt_fsm = SessionPid} = State, _Meta, Topics) ->
